@@ -6,7 +6,7 @@
 // the stylesheet is pinned last in <head>, overriding other theme plugins.
 
 window.__ModuleLoader__.load({
-  id: '@local/dsh-custom-ui-theme',
+  id: 'dsh-custom-ui-theme',
   factory(require) {
     const React = require('react');
     const h = React.createElement;

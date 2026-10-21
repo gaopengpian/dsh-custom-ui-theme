@@ -1,8 +1,17 @@
 {
-  "name": "@local/dsh-custom-ui-theme",
-  "version": "2.4.0",
-  "private": true,
+  "name": "dsh-custom-ui-theme",
+  "version": "2.4.1",
+  "private": false,
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gaopengpian/dsh-custom-ui-theme.git"
+  },
+  "homepage": "https://github.com/gaopengpian/dsh-custom-ui-theme#readme",
+  "bugs": "https://github.com/gaopengpian/dsh-custom-ui-theme/issues",
+  "keywords": ["dsh-plugin", "deepseek-harness", "theme", "ui-customization", "color", "font"],
+  "author": "gaopengpian",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
