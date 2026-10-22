@@ -341,7 +341,8 @@ window.__ModuleLoader__.load({
     }
 
     // Outline layer shared by the element picker and match previews. Returns
-    // {box, dispose}. Two z-indexes keep the hover rect above the match rects.
+    // {box, drawAll, dispose}: box is the single hover rect for the picker,
+    // drawAll(rects) outlines one rect per matched element.
     function createHighlightLayer(kind) {
       const wrap = document.createElement('div');
       wrap.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;pointer-events:none;z-index:2147483647';
@@ -353,13 +354,27 @@ window.__ModuleLoader__.load({
         return d;
       };
       document.documentElement.appendChild(wrap);
+      const pool = [];
       return {
         box: mk('border:2px dashed #e05656;background:rgba(224,86,86,0.12);border-radius:2px;z-index:2147483647'),
-        match: mk('border:1px solid #2aa1ff;background:rgba(42,161,255,0.16);border-radius:2px;z-index:2147483646'),
+        // Each match gets its own frame; rects are reused across redraws.
+        drawAll(rects) {
+          for (let i = pool.length; i < rects.length; i++) {
+            pool.push(mk('border:1px solid #2aa1ff;background:rgba(42,161,255,0.14);border-radius:2px;z-index:2147483646'));
+          }
+          for (let i = 0; i < pool.length; i++) {
+            const r = rects[i];
+            if (!r) {
+              pool[i].style.display = 'none';
+              continue;
+            }
+            placeBox(pool[i], r);
+          }
+        },
         dispose() {
-          if (this.box.parentNode) this.box.remove();
-          if (this.match.parentNode) this.match.remove();
-          if (wrap.parentNode) wrap.remove();
+          this.box.remove();
+          for (const d of pool) d.remove();
+          wrap.remove();
         },
       };
     }
@@ -422,33 +437,22 @@ window.__ModuleLoader__.load({
       return cleanup;
     }
 
-    // Hover preview: outlines every element of a selector. Returns a cancel fn.
+    // Hover preview: one frame per element the selector matches. Returns a
+    // cancel function.
     function highlightMatches(selector) {
       if (!selector) return () => {};
       const layer = createHighlightLayer('match');
       layer.box.remove();
       const draw = () => {
         const els = q(selector);
-        if (!els.length) {
-          layer.match.style.display = 'none';
-          return;
-        }
-        // One fixed rect from the first element, sized to cover them all: a
-        // single box reads more clearly than N overlapping ones.
-        let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+        const rects = [];
         for (const el of els) {
           const r = el.getBoundingClientRect();
+          // Skip elements that are not laid out, so no stray zero-size frames.
           if (!r.width && !r.height) continue;
-          left = Math.min(left, r.left);
-          top = Math.min(top, r.top);
-          right = Math.max(right, r.right);
-          bottom = Math.max(bottom, r.bottom);
+          rects.push(r);
         }
-        if (!isFinite(left)) {
-          layer.match.style.display = 'none';
-          return;
-        }
-        placeBox(layer.match, { left, top, width: right - left, height: bottom - top });
+        layer.drawAll(rects);
       };
       draw();
       let timer = setInterval(draw, 400);
