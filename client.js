@@ -38,7 +38,6 @@ window.__ModuleLoader__.load({
           removeNode: '删除此区域',
           resetAll: '全部重置',
           close: '关闭',
-          fBg: '背景色',
           fBorder: '边框色',
           fBorderW: '边框宽',
           fRadius: '圆角',
@@ -49,6 +48,7 @@ window.__ModuleLoader__.load({
           follow: '默认',
           inherit: '默认',
           clear: '清除',
+          autoRefresh: '修改后自动刷新页面',
           tokensHint: '覆盖宿主主题令牌，影响所有引用该令牌的区域；适合整体换色。',
           textPrimary: '主要文本',
           textSecondary: '次要文本',
@@ -104,6 +104,7 @@ window.__ModuleLoader__.load({
           follow: 'Default',
           inherit: 'Default',
           clear: 'Clear',
+          autoRefresh: 'Auto-refresh page after changes',
           tokensHint: 'Override host theme tokens; affects every area referencing them.',
           textPrimary: 'Primary text',
           textSecondary: 'Secondary text',
@@ -165,7 +166,14 @@ window.__ModuleLoader__.load({
       ['rightPanel.tabs', 'rightPanel', '面板标签栏', 'Panel tab strip'],
       ['rightPanel.body', 'rightPanel', '面板内容', 'Panel surface'],
       ['bottomBar', null, '底部面板', 'Bottom panel'],
+      ['custom', null, '自定义', 'Custom'],
     ];
+
+    // Container that owns every user-created region; regions are its children.
+    const CUSTOM_ROOT = 'custom';
+    // Prefix of user-created region ids. Kept explicit so old configs that stored
+    // custom regions under other parents still load and get re-parented.
+    const CUSTOM_PREFIX = 'custom:';
 
     // nodeId -> candidate selectors (first non-empty wins). Based on the real
     // Harness desktop DOM: data-slot holes, data-row-key prefixes,
@@ -265,6 +273,18 @@ window.__ModuleLoader__.load({
         if (!st.nodes[id]) st.nodes[id] = { parent, selector: '', style: {}, label: ZH ? labelZh : labelEn };
         else if (!st.nodes[id].label) st.nodes[id].label = ZH ? labelZh : labelEn;
       }
+      // Split the old flat custom namespace into container + children, and make
+      // sure every custom region sits directly under the container.
+      for (const key of Object.keys(st.nodes)) {
+        const n = st.nodes[key];
+        if (key === 'custom') continue;
+        if (key === 'custom.' || key.indexOf('custom.') === 0) {
+          st.nodes['custom' + key.slice(6)] = { ...n, parent: CUSTOM_ROOT };
+          delete st.nodes[key];
+        } else if (key.indexOf(CUSTOM_PREFIX) === 0 && n.parent !== CUSTOM_ROOT) {
+          st.nodes[key] = { ...n, parent: CUSTOM_ROOT };
+        }
+      }
       return st;
     }
 
@@ -361,14 +381,28 @@ window.__ModuleLoader__.load({
       return cleanup;
     }
 
+    const isCustomId = (id) => id.indexOf(CUSTOM_PREFIX) === 0;
+
+    // Next free custom index, derived from the ids actually stored (not from the
+    // seq counter, which older configs may have left out of sync).
+    function seqOf(nodes) {
+      let max = 0;
+      for (const id of Object.keys(nodes)) {
+        if (!isCustomId(id)) continue;
+        const n = parseInt(id.slice(CUSTOM_PREFIX.length), 10);
+        if (n > max) max = n;
+      }
+      return max;
+    }
+
     function resolveNodes(nodes) {
       const out = {};
       const ids = PRESETS.map(([id]) => id).concat(
-        Object.keys(nodes).filter((id) => id.indexOf('custom.') === 0),
+        Object.keys(nodes).filter(isCustomId),
       );
       for (const id of ids) {
         const n = nodes[id];
-        if (!n || id === 'global') continue;
+        if (!n || id === 'global' || id === CUSTOM_ROOT) continue;
         if (n.selector) {
           try { out[id] = q(n.selector); } catch { out[id] = []; }
           continue;
@@ -420,11 +454,11 @@ window.__ModuleLoader__.load({
       if (g.length) parts.push(`html { ${g.join('; ')} }`);
 
       const ids = PRESETS.map(([id]) => id).concat(
-        Object.keys(s.nodes).filter((id) => id.indexOf('custom.') === 0),
+        Object.keys(s.nodes).filter(isCustomId),
       );
       for (const id of ids) {
         const n = s.nodes[id];
-        if (!n || id === 'global') continue;
+        if (!n || id === 'global' || id === CUSTOM_ROOT) continue;
         const st = n.style || {};
         if (!Object.keys(st).some((k) => st[k])) continue;
         parts.push(...nodeRules(`[${ATTR}="${id}"]`, st));
@@ -543,20 +577,29 @@ window.__ModuleLoader__.load({
       return on ? h('span', { 'aria-hidden': true, style: { position: 'absolute', top: -2, right: -2, width: 6, height: 6, borderRadius: '50%', background: 'var(--dsw-alias-brand-primary, #247bbf)' } }) : null;
     }
 
-    function PickPopover({ node, id, count, onAuto, onClearSel, onRemove }) {
+    // Hover popovers are positioned from the hovered button's rect; nothing in
+    // this panel scrolls into view by itself, so no outside-click dismissal is
+    // needed here. Also: labels must never open a popover of their own.
+    function TrashIcon() {
+      // Inline SVG trash glyph: no font dependency, sizes with the button.
+      return h(
+        'svg',
+        { width: 13, height: 13, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2.2, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true, focusable: false },
+        h('path', { d: 'M4 7h16' }),
+        h('path', { d: 'M9 7V4.8A.8.8 0 0 1 9.8 4h4.4a.8.8 0 0 1 .8.8V7' }),
+        h('path', { d: 'M6.2 7l.9 12.2a1 1 0 0 0 1 .9h7.8a1 1 0 0 0 1-.9L17.8 7' }),
+        h('path', { d: 'M10.4 11v5.4' }),
+        h('path', { d: 'M13.6 11v5.4' }),
+      );
+    }
+
+    function PickPopover({ id, count }) {
       return h(
         'div',
         null,
-        node.selector
-          ? h('code', { style: { display: 'block', fontSize: 11, wordBreak: 'break-all', color: 'var(--dsw-alias-label-tertiary, #888)', marginBottom: 6 }, title: node.selector }, node.selector)
-          : null,
         h('div', { style: { fontSize: 11, color: count ? 'var(--dsw-alias-state-success-primary, #2a2)' : 'var(--dsw-alias-state-warn-primary, #c60)', marginBottom: 6 } },
-          count ? STR.matched(count) : (id.indexOf('custom.') === 0 ? STR.customNotBound : STR.unbound)),
-        h('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
-          node.selector ? h('button', { style: miniBtnStyle, onClick: onAuto }, STR.auto) : null,
-          node.selector ? h('button', { style: miniBtnStyle, onClick: onClearSel }, STR.clearSel) : null,
-          id.indexOf('custom.') === 0 ? h('button', { style: { ...miniBtnStyle, color: 'var(--dsw-alias-state-error-primary, #c00)' }, onClick: onRemove }, STR.removeNode) : null,
-        ),
+          count ? STR.matched(count) : (isCustomId(id) ? STR.customNotBound : STR.unbound)),
+        h('div', { style: { fontSize: 10, color: 'var(--dsw-alias-label-tertiary, #888)' } }, STR.autoRefresh),
       );
     }
 
@@ -576,11 +619,15 @@ window.__ModuleLoader__.load({
       const [picking, setPicking] = React.useState(null);
       const [counts, setCounts] = React.useState({});
       const [pop, setPop] = React.useState(null); // {id, key, rect}
+      const [hoveredRow, setHoveredRow] = React.useState(null); // row whose actions are hovered
       const sRef = React.useRef(s);
       sRef.current = s;
       const popTimer = React.useRef(null);
       const cancelPickRef = React.useRef(null);
       const lastRowRef = React.useRef(null);
+      // The tree's scroll container. Only that box scrolls; the panel height is
+      // fixed by its own layout and must never grow with new rows.
+      const treeRef = React.useRef(null);
 
       React.useEffect(() => {
         try {
@@ -623,7 +670,13 @@ window.__ModuleLoader__.load({
           clearTimeout(raf);
           raf = setTimeout(rescan, 500);
         });
-        mo.observe(document.body, { childList: true, subtree: true });
+        mo.observe(document.body, {
+          childList: true,
+          subtree: true,
+          // The plugin only adds/removes its own attribute and hover states never
+          // change a data-* attribute, so watching attributes would just spin.
+          attributes: false,
+        });
         const ro = new MutationObserver(keepLast);
         ro.observe(document.head, { childList: true });
         return () => {
@@ -816,30 +869,6 @@ window.__ModuleLoader__.load({
         });
       }, [picking, endPick, updateNode]);
 
-      const addCustom = React.useCallback(() => {
-        const parent = lastRowRef.current && sRef.current.nodes[lastRowRef.current] && lastRowRef.current !== 'global'
-          ? lastRowRef.current
-          : null;
-        setS((prev) => {
-          const seq = prev.seq;
-          const id = 'custom.' + seq;
-          return {
-            ...prev,
-            seq: prev.seq + 1,
-            nodes: {
-              ...prev.nodes,
-              [id]: {
-                parent,
-                selector: '',
-                style: {},
-                custom: true,
-                label: ZH ? '自定义区域 ' + seq : 'Custom region ' + seq,
-              },
-            },
-          };
-        });
-      }, []);
-
       const removeCustom = React.useCallback((id) => {
         setS((prev) => {
           const nodes = { ...prev.nodes };
@@ -854,6 +883,40 @@ window.__ModuleLoader__.load({
           return { ...prev, nodes };
         });
         setPop(null);
+      }, []);
+
+      // "+" in the 自定义 row. New ids are one past the highest existing custom
+      // index, so duplicates are impossible even if an older saved config moved
+      // the seq counter.
+      const addCustom = React.useCallback(() => {
+        const next = seqOf(sRef.current.nodes) + 1;
+        const id = CUSTOM_PREFIX + next;
+        setS((prev) => ({
+          ...prev,
+          seq: Math.max(prev.seq || 1, next),
+          nodes: {
+            ...prev.nodes,
+            [id]: {
+              parent: CUSTOM_ROOT,
+              selector: '',
+              style: {},
+              custom: true,
+              label: ZH ? '自定义区域 ' + next : 'Custom region ' + next,
+            },
+          },
+        }));
+        // After the row exists, reveal it inside the tree's own scroll box. The
+        // panel keeps its size: only .tree scrolls, never the dialog.
+        requestAnimationFrame(() => {
+          const box = treeRef.current;
+          const row = box && box.querySelector('[data-cut-row="' + id + '"]');
+          if (!row) return;
+          const top = row.offsetTop;
+          const bottom = top + row.offsetHeight;
+          if (bottom > box.scrollTop + box.clientHeight || top < box.scrollTop) {
+            box.scrollTop = Math.max(0, bottom - box.clientHeight + 8);
+          }
+        });
       }, []);
 
       const resetAll = React.useCallback(() => {
@@ -915,9 +978,12 @@ window.__ModuleLoader__.load({
         const count = counts[id] || 0;
         const styled = Object.keys(st).some((k) => st[k]);
         const isGlobal = id === 'global';
+        const isCustomRoot = id === CUSTOM_ROOT;
+        const isCustom = isCustomId(id);
         return h(
           'div',
           {
+            'data-cut-row': id,
             style: {
               display: 'flex',
               alignItems: 'center',
@@ -931,17 +997,20 @@ window.__ModuleLoader__.load({
           styled
             ? h('span', { 'aria-hidden': true, style: { width: 7, height: 7, borderRadius: '50%', background: 'var(--dsw-alias-brand-primary, #247bbf)', flex: '0 0 auto' } })
             : h('span', { style: { width: 7, flex: '0 0 auto' } }),
+          // Labels are display-only: hovering a name must not open anything.
           h('span', {
             style: { fontSize: 12.5, color: 'var(--dsw-alias-label-primary, inherit)', flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-            onMouseEnter: (e) => { if (!picking && !isGlobal) openPop(id, 'manage', e); },
-            onMouseLeave: scheduleClose,
           }, n.label || id),
           !isGlobal && count
             ? h('span', { style: { fontSize: 10, color: 'var(--dsw-alias-state-success-primary, #2a2)', flex: '0 0 auto' } }, count)
             : null,
           h(
             'span',
-            { style: { display: 'inline-flex', gap: 4, flex: '0 0 auto' } },
+            {
+              style: { display: 'inline-flex', alignItems: 'center', gap: 4, flex: '0 0 auto' },
+              onMouseEnter: () => setHoveredRow(id),
+              onMouseLeave: () => setHoveredRow((cur) => (cur === id ? null : cur)),
+            },
             isGlobal
               ? [
                   rowButton(id, 'textColor', STR.text, Object.keys(s.tokens).some((k) => ['textPrimary', 'textSecondary', 'textTertiary', 'link', 'brand'].includes(k))),
@@ -954,6 +1023,27 @@ window.__ModuleLoader__.load({
                   rowButton(id, 'border', STR.border, !!(st.border || st.borderW || st.radius)),
                   rowButton(id, 'text', STR.text, !!(st.text || st.family || st.size || st.weight)),
                 ],
+            isCustomRoot
+              ? h('button', {
+                  style: { ...btnStyle, padding: '0 6px', fontSize: 13, lineHeight: '18px' },
+                  title: STR.addRegion,
+                  'aria-label': STR.addRegion,
+                  onClick: (e) => { e.stopPropagation(); addCustom(); },
+                }, '+')
+              : null,
+            // Row-level delete: icon only, right-most, hover-revealed.
+            isCustom
+              ? h('button', {
+                  style: {
+                    ...btnStyle, padding: '0 3px', lineHeight: '18px',
+                    display: 'inline-flex', alignItems: 'center', color: 'var(--dsw-alias-state-error-primary, #c00)',
+                    opacity: hoveredRow === id ? 1 : 0.45,
+                  },
+                  title: STR.removeNode,
+                  'aria-label': STR.removeNode,
+                  onClick: (e) => { e.stopPropagation(); removeCustom(id); },
+                }, h(TrashIcon, null))
+              : null,
           ),
         );
       };
@@ -961,8 +1051,8 @@ window.__ModuleLoader__.load({
       const Tree = ({ parent, depth }) => {
         const childrenIds = PRESETS.filter(([id, p]) => p === parent && s.nodes[id]).map(([id]) => id).concat(
           Object.keys(s.nodes)
-            .filter((k) => (s.nodes[k].parent || null) === parent && k.indexOf('custom.') === 0)
-            .sort((a, b) => Number(a.split('.')[1]) - Number(b.split('.')[1])),
+            .filter((k) => isCustomId(k) && s.nodes[k] && (s.nodes[k].parent || CUSTOM_ROOT) === parent)
+            .sort((a, b) => parseInt(a.slice(CUSTOM_PREFIX.length), 10) - parseInt(b.slice(CUSTOM_PREFIX.length), 10)),
         );
         return h(
           'div',
@@ -998,15 +1088,8 @@ window.__ModuleLoader__.load({
           return null;
         }
         const st = n.style || {};
-        if (pop.key === 'pick' || pop.key === 'manage') {
-          return h(PickPopover, {
-            node: n,
-            id,
-            count: counts[id] || 0,
-            onAuto: () => updateNode(id, { selector: '' }),
-            onClearSel: () => updateNode(id, { selector: '' }),
-            onRemove: () => removeCustom(id),
-          });
+        if (pop.key === 'pick') {
+          return h(PickPopover, { id, count: counts[id] || 0 });
         }
         if (pop.key === 'bg') {
           return h(ColorField, { label: STR.fBg, value: st.bg, onChange: (v) => setStyle(id, 'bg', v) });
@@ -1163,7 +1246,7 @@ window.__ModuleLoader__.load({
               ),
               h(
                 'div',
-                { style: { flex: '1 1 auto', overflowY: 'auto', padding: '0 14px' } },
+                { ref: treeRef, style: { flex: '1 1 auto', minHeight: 0, overflowY: 'auto', padding: '0 14px' } },
                 Tree({ parent: null, depth: 0 }),
               ),
               // sticky footer: does not scroll with the tree
@@ -1173,6 +1256,7 @@ window.__ModuleLoader__.load({
                   style: {
                     position: 'sticky',
                     bottom: 0,
+                    flex: '0 0 auto',
                     display: 'flex',
                     justifyContent: 'flex-end',
                     gap: 8,
@@ -1181,7 +1265,7 @@ window.__ModuleLoader__.load({
                     background: 'var(--dsw-alias-bg-overlay, var(--dsw-alias-bg-layer-1, #fff))',
                   },
                 },
-                h('button', { style: miniBtnStyle, onClick: addCustom }, STR.addRegion),
+                h('button', { style: miniBtnStyle, onClick: () => setOpen(false) }, STR.close),
                 h('button', { style: { ...miniBtnStyle, color: 'var(--dsw-alias-state-error-primary, #c00)' }, onClick: resetAll }, STR.resetAll),
               ),
             )
