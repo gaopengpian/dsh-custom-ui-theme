@@ -815,6 +815,10 @@ window.__ModuleLoader__.load({
       // The tree's scroll container. Only that box scrolls; the panel height is
       // fixed by its own layout and must never grow with new rows.
       const treeRef = React.useRef(null);
+      // The floating button and the dialog. The dialog may never cover the
+      // button, so both rects are compared after every layout change.
+      const entryRef = React.useRef(null);
+      const panelRef = React.useRef(null);
 
       React.useEffect(() => {
         try {
@@ -1366,33 +1370,78 @@ window.__ModuleLoader__.load({
       };
 
       const fabPos = s.fabPos ? clampFab(s.fabPos) : null;
-
-      // Anchor the panel above the button when the button sits in the lower part
-      // of the screen, otherwise below it; always keep it inside the viewport.
+      // Panel placement. The dialog goes on whichever side of the button has
+      // more room and its height is capped to exactly that room, so the 8px gap
+      // is a guarantee rather than a hope: the dialog can never overlap - and
+      // therefore never cover - the floating button.
+      const PANEL_GAP = 8;
+      const PANEL_WANT_W = 560;
       const panelPos = fabPos
         ? (() => {
-            const PW = 560;
-            const PH = Math.min(Math.round(window.innerHeight * 0.74), window.innerHeight - 2 * FAB_MARGIN);
-            let left = fabPos.x + fabWH.w - PW;
-            left = Math.min(Math.max(FAB_MARGIN, left), Math.max(FAB_MARGIN, window.innerWidth - PW - FAB_MARGIN));
-            const spaceAbove = fabPos.y - FAB_MARGIN - 8;
-            const spaceBelow = window.innerHeight - (fabPos.y + fabWH.h) - FAB_MARGIN - 8;
-            if (spaceAbove >= PH || spaceAbove >= spaceBelow) {
-              return { left, top: Math.max(FAB_MARGIN, fabPos.y - PH - 8), maxHeight: Math.max(160, spaceAbove) };
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+            const btnTop = fabPos.y;
+            const btnBottom = fabPos.y + fabWH.h;
+            const width = Math.min(PANEL_WANT_W, Math.max(240, vw - 2 * FAB_MARGIN));
+            let left = fabPos.x + fabWH.w - width;
+            left = Math.min(Math.max(FAB_MARGIN, left), Math.max(FAB_MARGIN, vw - width - FAB_MARGIN));
+            const spaceAbove = Math.max(0, btnTop - FAB_MARGIN - PANEL_GAP);
+            const spaceBelow = Math.max(0, vh - btnBottom - FAB_MARGIN - PANEL_GAP);
+            const wantH = Math.min(Math.round(vh * 0.74), vh - 2 * FAB_MARGIN);
+            if (spaceAbove >= spaceBelow) {
+              const h = Math.min(wantH, spaceAbove);
+              return { left, width, top: btnTop - PANEL_GAP - h, maxHeight: h };
             }
-            return {
-              left,
-              top: fabPos.y + fabWH.h + 8,
-              maxHeight: Math.max(160, Math.min(PH, window.innerHeight - (fabPos.y + fabWH.h) - FAB_MARGIN - 8)),
-            };
+            const h = Math.min(wantH, spaceBelow);
+            return { left, width, top: btnBottom + PANEL_GAP, maxHeight: h };
           })()
         : null;
+
+      // Measured backstop for the arithmetic above. Any layout surprise (a
+      // reshaped viewport, a taller-than-expected panel, a content-driven
+      // resize) is caught after layout and corrected by pushing the dialog to
+      // the roomier side of the button. The button is never covered.
+      React.useLayoutEffect(() => {
+        if (!open || picking) return undefined;
+        const el = panelRef.current;
+        const btn = entryRef.current;
+        if (!el || !btn) return undefined;
+        const fix = () => {
+          if (!el.isConnected || !btn.isConnected) return;
+          const p = el.getBoundingClientRect();
+          const b = btn.getBoundingClientRect();
+          const overlaps = p.left < b.right && p.right > b.left && p.top < b.bottom && p.bottom > b.top;
+          if (!overlaps) return;
+          const vh = window.innerHeight;
+          const spaceAbove = Math.max(0, b.top - FAB_MARGIN - PANEL_GAP);
+          const spaceBelow = Math.max(0, vh - b.bottom - FAB_MARGIN - PANEL_GAP);
+          // Pin the box by its top-left corner: a remaining bottom/right anchor
+          // would let the browser move a max-height-clamped box back over the
+          // button.
+          el.style.bottom = 'auto';
+          el.style.right = 'auto';
+          el.style.left = Math.round(p.left) + 'px';
+          el.style.top = (spaceAbove >= spaceBelow
+            ? Math.max(FAB_MARGIN, b.top - PANEL_GAP - Math.min(p.height, spaceAbove))
+            : b.bottom + PANEL_GAP) + 'px';
+          el.style.maxHeight = Math.max(0, spaceAbove >= spaceBelow ? spaceAbove : spaceBelow) + 'px';
+        };
+        fix();
+        const ro = typeof ResizeObserver === 'function' ? new ResizeObserver(fix) : null;
+        if (ro) ro.observe(el);
+        window.addEventListener('resize', fix);
+        return () => {
+          if (ro) ro.disconnect();
+          window.removeEventListener('resize', fix);
+        };
+      }, [open, picking, s.fabPos, fabWH.w, fabWH.h]);
 
       const entryBtn = h(
         'button',
         {
           type: 'button',
           className: PANEL_CLS,
+          ref: entryRef,
           onPointerDown: onFabPointerDown,
           onPointerUp: onFabPointerUp,
           onPointerCancel: onFabPointerUp,
@@ -1414,7 +1463,9 @@ window.__ModuleLoader__.load({
             ...(fabPos
               ? { left: fabPos.x, top: fabPos.y }
               : { right: 16, bottom: 16 }),
-            zIndex: 2147483000,
+            // Above the dialog: even if placement ever went wrong, the toggle
+            // must stay visible and clickable rather than being covered.
+            zIndex: 2147483200,
             display: 'inline-flex',
             alignItems: 'center',
             gap: 4,
@@ -1466,12 +1517,13 @@ window.__ModuleLoader__.load({
                 className: PANEL_CLS,
                 role: 'dialog',
                 'aria-label': STR.title,
+                ref: panelRef,
                 style: {
                   position: 'fixed',
                   ...(panelPos
                     ? { left: panelPos.left, top: panelPos.top, maxHeight: panelPos.maxHeight }
                     : { right: 16, bottom: 56, maxHeight: '74vh' }),
-                  width: 560,
+                  width: panelPos ? panelPos.width : 560,
                   display: 'flex',
                   flexDirection: 'column',
                   zIndex: 2147483000,
