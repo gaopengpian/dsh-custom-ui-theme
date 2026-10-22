@@ -676,6 +676,7 @@ window.__ModuleLoader__.load({
       const [fabWH, setFabWH] = React.useState({ w: 76, h: 30 });
       const dragRef = React.useRef(null);
       const moversRef = React.useRef(null);
+      const suppressClickRef = React.useRef(false);
 
       const clampFab = (pos, size) => {
         const st = size || fabWH;
@@ -701,38 +702,82 @@ window.__ModuleLoader__.load({
         return () => window.removeEventListener('resize', onResize);
       }, [setS]);
 
-      const onFabPointerDown = (e) => {
-        if (e.button !== 0 || picking) return;
-        const r = e.currentTarget.getBoundingClientRect();
-        dragRef.current = { sx: e.clientX, sy: e.clientY, ox: r.left, oy: r.top, w: r.width, h: r.height, moved: false };
-        setFabWH({ w: r.width, h: r.height });
-      };
-
-      const onFabPointerMove = (e) => {
+      // Pointer capture keeps move/up events coming to the button even after the
+      // cursor leaves it; a capture-phase window listener is the safety net when
+      // capture is lost (e.g. hover over an iframe) or another handler stops
+      // propagation. Position updates are written to the DOM synchronously, so the
+      // button can never fall behind the cursor and "escape" it.
+      const moveFab = (clientX, clientY) => {
         const d = dragRef.current;
         if (!d) return;
-        const dx = e.clientX - d.sx;
-        const dy = e.clientY - d.sy;
+        const dx = clientX - d.sx;
+        const dy = clientY - d.sy;
         if (!d.moved && dx * dx + dy * dy < DRAG_THRESHOLD * DRAG_THRESHOLD) return;
         if (!d.moved) {
           d.moved = true;
           setDragging(true);
         }
         const next = clampFab({ x: d.ox + dx, y: d.oy + dy }, { w: d.w, h: d.h });
+        // Move the DOM node immediately, before React's async commit, so the
+        // button never lags behind the cursor.
+        const el = d.el;
+        if (el) {
+          el.style.left = next.x + 'px';
+          el.style.top = next.y + 'px';
+          el.style.right = 'auto';
+          el.style.bottom = 'auto';
+        }
         setS((prev) => (prev.fabPos && prev.fabPos.x === next.x && prev.fabPos.y === next.y
           ? prev
           : { ...prev, fabPos: next }));
       };
 
-      // Returns true when the pointer gesture actually moved the button, so the
-      // trailing click is suppressed instead of toggling the panel.
-      const endFabDrag = () => {
-        const d = dragRef.current;
-        dragRef.current = null;
-        if (!d) return false;
-        if (d.moved) setDragging(false);
-        return d.moved;
+      const onFabPointerMove = (e) => {
+        if (!dragRef.current) return;
+        if (e.buttons === 0) {
+          onFabPointerUp();
+          return;
+        }
+        moveFab(e.clientX, e.clientY);
       };
+
+      const onFabPointerDown = (e) => {
+        if (e.button !== 0 || picking) return;
+        if (dragRef.current) return;
+        suppressClickRef.current = false;
+        const el = e.currentTarget;
+        const r = el.getBoundingClientRect();
+        dragRef.current = {
+          sx: e.clientX,
+          sy: e.clientY,
+          ox: r.left,
+          oy: r.top,
+          w: r.width,
+          h: r.height,
+          moved: false,
+          pointerId: e.pointerId,
+          el,
+        };
+        setFabWH({ w: r.width, h: r.height });
+        try { el.setPointerCapture(e.pointerId); } catch {}
+        window.addEventListener('pointermove', onFabPointerMove, true);
+      };
+
+      // Idempotent: safe to call from pointerup, pointercancel, lostpointercapture
+      // and the trailing click, in any order.
+      function onFabPointerUp() {
+        const d = dragRef.current;
+        if (!d) return;
+        window.removeEventListener('pointermove', onFabPointerMove, true);
+        try { d.el.releasePointerCapture(d.pointerId); } catch {}
+        dragRef.current = null;
+        if (d.moved) {
+          setDragging(false);
+          // Remember that this gesture was a drag so the click fired right after
+          // pointerup does not toggle the panel; cleared on the next pointerdown.
+          suppressClickRef.current = true;
+        }
+      }
 
       // While dragging, drop the focus from whatever was focused before so the
       // window-blur dismissal of popovers/menus does not fight the drag.
@@ -1017,11 +1062,13 @@ window.__ModuleLoader__.load({
           type: 'button',
           className: PANEL_CLS,
           onPointerDown: onFabPointerDown,
-          onPointerMove: onFabPointerMove,
-          onPointerUp: endFabDrag,
-          onPointerCancel: endFabDrag,
+          onPointerUp: onFabPointerUp,
+          onPointerCancel: onFabPointerUp,
+          onLostPointerCapture: onFabPointerUp,
+          onDragStart: (e) => e.preventDefault(),
           onClick: (e) => {
-            if (endFabDrag()) {
+            if (suppressClickRef.current) {
+              suppressClickRef.current = false;
               e.preventDefault();
               return;
             }
