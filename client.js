@@ -259,6 +259,7 @@ window.__ModuleLoader__.load({
         font: (raw && raw.font) || {},
         nodes: (raw && raw.nodes) || {},
         seq: (raw && raw.seq) || 1,
+        fabPos: raw && raw.fabPos && typeof raw.fabPos.x === 'number' && typeof raw.fabPos.y === 'number' ? raw.fabPos : null,
       };
       for (const [id, parent, labelZh, labelEn] of PRESETS) {
         if (!st.nodes[id]) st.nodes[id] = { parent, selector: '', style: {}, label: ZH ? labelZh : labelEn };
@@ -666,6 +667,84 @@ window.__ModuleLoader__.load({
         });
       }, []);
 
+      // Draggable floating button. Position is stored as a fixed top-left point
+      // (fabPos) and clamped to the viewport, so the button can never be dragged
+      // off-screen by accident.
+      const DRAG_THRESHOLD = 4;
+      const FAB_MARGIN = 8;
+      const [dragging, setDragging] = React.useState(false);
+      const [fabWH, setFabWH] = React.useState({ w: 76, h: 30 });
+      const dragRef = React.useRef(null);
+      const moversRef = React.useRef(null);
+
+      const clampFab = (pos, size) => {
+        const st = size || fabWH;
+        const maxX = Math.max(FAB_MARGIN, window.innerWidth - st.w - FAB_MARGIN);
+        const maxY = Math.max(FAB_MARGIN, window.innerHeight - st.h - FAB_MARGIN);
+        return {
+          x: Math.min(Math.max(FAB_MARGIN, Math.round(pos.x)), maxX),
+          y: Math.min(Math.max(FAB_MARGIN, Math.round(pos.y)), maxY),
+        };
+      };
+
+      // Keep window listeners reading the latest fabWH/clamp without re-binding.
+      React.useEffect(() => {
+        moversRef.current = { setS, clampFab };
+      });
+
+      React.useEffect(() => {
+        const onResize = () => {
+          const m = moversRef.current;
+          setS((prev) => (prev.fabPos ? { ...prev, fabPos: m.clampFab(prev.fabPos) } : prev));
+        };
+        window.addEventListener('resize', onResize);
+        return () => window.removeEventListener('resize', onResize);
+      }, [setS]);
+
+      const onFabPointerDown = (e) => {
+        if (e.button !== 0 || picking) return;
+        const r = e.currentTarget.getBoundingClientRect();
+        dragRef.current = { sx: e.clientX, sy: e.clientY, ox: r.left, oy: r.top, w: r.width, h: r.height, moved: false };
+        setFabWH({ w: r.width, h: r.height });
+      };
+
+      const onFabPointerMove = (e) => {
+        const d = dragRef.current;
+        if (!d) return;
+        const dx = e.clientX - d.sx;
+        const dy = e.clientY - d.sy;
+        if (!d.moved && dx * dx + dy * dy < DRAG_THRESHOLD * DRAG_THRESHOLD) return;
+        if (!d.moved) {
+          d.moved = true;
+          setDragging(true);
+        }
+        const next = clampFab({ x: d.ox + dx, y: d.oy + dy }, { w: d.w, h: d.h });
+        setS((prev) => (prev.fabPos && prev.fabPos.x === next.x && prev.fabPos.y === next.y
+          ? prev
+          : { ...prev, fabPos: next }));
+      };
+
+      // Returns true when the pointer gesture actually moved the button, so the
+      // trailing click is suppressed instead of toggling the panel.
+      const endFabDrag = () => {
+        const d = dragRef.current;
+        dragRef.current = null;
+        if (!d) return false;
+        if (d.moved) setDragging(false);
+        return d.moved;
+      };
+
+      // While dragging, drop the focus from whatever was focused before so the
+      // window-blur dismissal of popovers/menus does not fight the drag.
+      React.useEffect(() => {
+        if (dragging) {
+          const el = document.activeElement;
+          if (el && el.blur) {
+            try { el.blur(); } catch {}
+          }
+        }
+      }, [dragging]);
+
       const endPick = React.useCallback(() => {
         if (cancelPickRef.current) {
           cancelPickRef.current();
@@ -737,7 +816,7 @@ window.__ModuleLoader__.load({
         for (const [id, parent, labelZh, labelEn] of PRESETS) {
           nodes[id] = { parent, selector: '', style: {}, label: ZH ? labelZh : labelEn };
         }
-        setS({ tokens: {}, font: {}, nodes, seq: 1 });
+        setS({ tokens: {}, font: {}, nodes, seq: 1, fabPos: null });
         endPick();
       }, [endPick]);
 
@@ -909,12 +988,43 @@ window.__ModuleLoader__.load({
         return null;
       };
 
+      const fabPos = s.fabPos ? clampFab(s.fabPos) : null;
+
+      // Anchor the panel above the button when the button sits in the lower part
+      // of the screen, otherwise below it; always keep it inside the viewport.
+      const panelPos = fabPos
+        ? (() => {
+            const PW = 560;
+            const PH = Math.min(Math.round(window.innerHeight * 0.74), window.innerHeight - 2 * FAB_MARGIN);
+            let left = fabPos.x + fabWH.w - PW;
+            left = Math.min(Math.max(FAB_MARGIN, left), Math.max(FAB_MARGIN, window.innerWidth - PW - FAB_MARGIN));
+            const spaceAbove = fabPos.y - FAB_MARGIN - 8;
+            const spaceBelow = window.innerHeight - (fabPos.y + fabWH.h) - FAB_MARGIN - 8;
+            if (spaceAbove >= PH || spaceAbove >= spaceBelow) {
+              return { left, top: Math.max(FAB_MARGIN, fabPos.y - PH - 8), maxHeight: Math.max(160, spaceAbove) };
+            }
+            return {
+              left,
+              top: fabPos.y + fabWH.h + 8,
+              maxHeight: Math.max(160, Math.min(PH, window.innerHeight - (fabPos.y + fabWH.h) - FAB_MARGIN - 8)),
+            };
+          })()
+        : null;
+
       const entryBtn = h(
         'button',
         {
           type: 'button',
           className: PANEL_CLS,
-          onClick: () => {
+          onPointerDown: onFabPointerDown,
+          onPointerMove: onFabPointerMove,
+          onPointerUp: endFabDrag,
+          onPointerCancel: endFabDrag,
+          onClick: (e) => {
+            if (endFabDrag()) {
+              e.preventDefault();
+              return;
+            }
             if (picking) { endPick(); return; }
             setOpen((o) => !o);
           },
@@ -922,8 +1032,9 @@ window.__ModuleLoader__.load({
           'aria-pressed': open,
           style: {
             position: 'fixed',
-            right: 16,
-            bottom: 16,
+            ...(fabPos
+              ? { left: fabPos.x, top: fabPos.y }
+              : { right: 16, bottom: 16 }),
             zIndex: 2147483000,
             display: 'inline-flex',
             alignItems: 'center',
@@ -938,7 +1049,10 @@ window.__ModuleLoader__.load({
               : 'var(--dsw-alias-bg-layer-1, #fff)',
             color: 'var(--dsw-alias-label-primary, inherit)',
             boxShadow: '0 2px 10px rgba(0,0,0,0.2)',
-            cursor: 'pointer',
+            cursor: dragging ? 'grabbing' : 'grab',
+            touchAction: 'none',
+            userSelect: 'none',
+            transition: dragging ? 'none' : 'box-shadow 0.15s',
           },
         },
         h('span', { 'aria-hidden': true }, '◐'),
@@ -975,10 +1089,10 @@ window.__ModuleLoader__.load({
                 'aria-label': STR.title,
                 style: {
                   position: 'fixed',
-                  right: 16,
-                  bottom: 56,
+                  ...(panelPos
+                    ? { left: panelPos.left, top: panelPos.top, maxHeight: panelPos.maxHeight }
+                    : { right: 16, bottom: 56, maxHeight: '74vh' }),
                   width: 560,
-                  maxHeight: '74vh',
                   display: 'flex',
                   flexDirection: 'column',
                   zIndex: 2147483000,
