@@ -49,6 +49,14 @@ window.__ModuleLoader__.load({
           inherit: '默认',
           clear: '清除',
           autoRefresh: '修改后自动刷新页面',
+          view: '查看',
+          selectorTitle: 'CSS 选择器',
+          effective: '实际生效',
+          invalid: '选择器无效',
+          matchedLabel: '匹配数',
+          hoverPreview: '悬浮可高亮匹配的元素',
+          apply: '应用',
+          renameHint: '双击可重命名',
           tokensHint: '覆盖宿主主题令牌，影响所有引用该令牌的区域；适合整体换色。',
           textPrimary: '主要文本',
           textSecondary: '次要文本',
@@ -105,6 +113,14 @@ window.__ModuleLoader__.load({
           inherit: 'Default',
           clear: 'Clear',
           autoRefresh: 'Auto-refresh page after changes',
+          view: 'View',
+          selectorTitle: 'CSS selector',
+          effective: 'Effective',
+          invalid: 'Invalid selector',
+          matchedLabel: 'Matches',
+          hoverPreview: 'Hover to highlight matched elements',
+          apply: 'Apply',
+          renameHint: 'Double click to rename',
           tokensHint: 'Override host theme tokens; affects every area referencing them.',
           textPrimary: 'Primary text',
           textSecondary: 'Secondary text',
@@ -324,28 +340,53 @@ window.__ModuleLoader__.load({
       return tryUnique(sel) ? sel : '';
     }
 
+    // Outline layer shared by the element picker and match previews. Returns
+    // {box, dispose}. Two z-indexes keep the hover rect above the match rects.
+    function createHighlightLayer(kind) {
+      const wrap = document.createElement('div');
+      wrap.style.cssText = 'position:fixed;left:0;top:0;width:0;height:0;pointer-events:none;z-index:2147483647';
+      const mk = (css) => {
+        const d = document.createElement('div');
+        d.style.cssText = 'position:fixed;pointer-events:none;box-sizing:border-box;display:none;' + css;
+        d.setAttribute('data-dsh-ui-theme-style', kind);
+        document.documentElement.appendChild(d);
+        return d;
+      };
+      document.documentElement.appendChild(wrap);
+      return {
+        box: mk('border:2px dashed #e05656;background:rgba(224,86,86,0.12);border-radius:2px;z-index:2147483647'),
+        match: mk('border:1px solid #2aa1ff;background:rgba(42,161,255,0.16);border-radius:2px;z-index:2147483646'),
+        dispose() {
+          if (this.box.parentNode) this.box.remove();
+          if (this.match.parentNode) this.match.remove();
+          if (wrap.parentNode) wrap.remove();
+        },
+      };
+    }
+
+    function placeBox(box, r) {
+      box.style.display = 'block';
+      box.style.left = r.left + 'px';
+      box.style.top = r.top + 'px';
+      box.style.width = Math.max(1, r.width) + 'px';
+      box.style.height = Math.max(1, r.height) + 'px';
+    }
+
     // Element picker. Returns a cancel function.
     function pickElement(onDone) {
       const cursorStyle = document.createElement('style');
       cursorStyle.setAttribute('data-dsh-ui-theme-style', 'cursor');
       cursorStyle.textContent = 'html, body, * { cursor: crosshair !important }';
       document.head.appendChild(cursorStyle);
-      const box = document.createElement('div');
-      box.style.cssText =
-        'position:fixed;z-index:2147483647;pointer-events:none;border:2px dashed #e05656;background:rgba(224,86,86,0.12);border-radius:2px;display:none;box-sizing:border-box';
-      document.documentElement.appendChild(box);
+      const layer = createHighlightLayer('pick');
+      const box = layer.box;
       const move = (e) => {
         const hovered = document.elementFromPoint(e.clientX, e.clientY);
         if (!hovered || hovered === box) {
           box.style.display = 'none';
           return;
         }
-        const r = hovered.getBoundingClientRect();
-        box.style.display = 'block';
-        box.style.left = r.left + 'px';
-        box.style.top = r.top + 'px';
-        box.style.width = r.width + 'px';
-        box.style.height = r.height + 'px';
+        placeBox(box, hovered.getBoundingClientRect());
       };
       let done = false;
       const cleanup = () => {
@@ -355,7 +396,7 @@ window.__ModuleLoader__.load({
         document.removeEventListener('mousemove', move, true);
         document.removeEventListener('click', click, true);
         document.removeEventListener('keydown', key, true);
-        if (box.parentNode) box.parentNode.removeChild(box);
+        layer.dispose();
       };
       const finish = (el) => {
         cleanup();
@@ -379,6 +420,55 @@ window.__ModuleLoader__.load({
       document.addEventListener('click', click, true);
       document.addEventListener('keydown', key, true);
       return cleanup;
+    }
+
+    // Hover preview: outlines every element of a selector. Returns a cancel fn.
+    function highlightMatches(selector) {
+      if (!selector) return () => {};
+      const layer = createHighlightLayer('match');
+      layer.box.remove();
+      const draw = () => {
+        const els = q(selector);
+        if (!els.length) {
+          layer.match.style.display = 'none';
+          return;
+        }
+        // One fixed rect from the first element, sized to cover them all: a
+        // single box reads more clearly than N overlapping ones.
+        let left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+        for (const el of els) {
+          const r = el.getBoundingClientRect();
+          if (!r.width && !r.height) continue;
+          left = Math.min(left, r.left);
+          top = Math.min(top, r.top);
+          right = Math.max(right, r.right);
+          bottom = Math.max(bottom, r.bottom);
+        }
+        if (!isFinite(left)) {
+          layer.match.style.display = 'none';
+          return;
+        }
+        placeBox(layer.match, { left, top, width: right - left, height: bottom - top });
+      };
+      draw();
+      let timer = setInterval(draw, 400);
+      window.addEventListener('resize', draw);
+      return () => {
+        clearInterval(timer);
+        window.removeEventListener('resize', draw);
+        layer.dispose();
+      };
+    }
+
+    // CSS for an arbitrary user-owned selector, for the StyleRow preview.
+    function selectorCss(selector, st) {
+      if (!selector) return '';
+      try {
+        document.createDocumentFragment().querySelector(selector);
+      } catch {
+        return '';
+      }
+      return nodeRules(selector, st || {}).join('\n');
     }
 
     const isCustomId = (id) => id.indexOf(CUSTOM_PREFIX) === 0;
@@ -593,16 +683,6 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function PickPopover({ id, count }) {
-      return h(
-        'div',
-        null,
-        h('div', { style: { fontSize: 11, color: count ? 'var(--dsw-alias-state-success-primary, #2a2)' : 'var(--dsw-alias-state-warn-primary, #c60)', marginBottom: 6 } },
-          count ? STR.matched(count) : (isCustomId(id) ? STR.customNotBound : STR.unbound)),
-        h('div', { style: { fontSize: 10, color: 'var(--dsw-alias-label-tertiary, #888)' } }, STR.autoRefresh),
-      );
-    }
-
     function GlobalColorsPopover({ s, setToken, which }) {
       const fields = which === 'text' ? TOKEN_FIELDS.slice(0, 5) : TOKEN_FIELDS.slice(5);
       return h(
@@ -610,6 +690,109 @@ window.__ModuleLoader__.load({
         null,
         h('p', { style: { fontSize: 10, color: 'var(--dsw-alias-label-tertiary, #888)', margin: '0 0 6px' } }, STR.tokensHint),
         ...fields.map(([k, , label]) => h(ColorField, { key: k, label, value: s.tokens[k], onChange: (v) => setToken(k, v) })),
+      );
+    }
+
+    // Inline rename box for a custom region. Enter / blur commits, Esc cancels.
+    function RenameBox({ initial, onCommit, onCancel }) {
+      const [v, setV] = React.useState(initial);
+      const done = React.useRef(false);
+      const commit = () => {
+        if (done.current) return;
+        done.current = true;
+        onCommit(v.trim() || initial);
+      };
+      return h('input', {
+        autoFocus: true,
+        value: v,
+        maxLength: 40,
+        onChange: (e) => setV(e.target.value),
+        onBlur: commit,
+        onKeyDown: (e) => {
+          e.stopPropagation();
+          if (e.key === 'Enter') { e.preventDefault(); commit(); }
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            done.current = true;
+            onCancel();
+          }
+        },
+        style: { ...inputStyle, flex: '1 1 auto', fontSize: 12.5, padding: '1px 6px' },
+      });
+    }
+
+    // Selector editor opened by the row's 查看 button: effective selector as
+    // text, editable; an empty box means "back to the automatic binding".
+    function StyleRow({ id, n, effective, onChange }) {
+      const [v, setV] = React.useState(n.selector || '');
+      const [err, setErr] = React.useState('');
+      const [copied, setCopied] = React.useState(false);
+      const valid = (sel) => {
+        if (!sel) return true;
+        try {
+          document.createDocumentFragment().querySelector(sel);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      const commit = (next) => {
+        const t = next.trim();
+        if (!valid(t)) {
+          setErr(STR.invalid);
+          return false;
+        }
+        setErr('');
+        onChange(t);
+        return true;
+      };
+      const css = selectorCss(n.selector || effective, n.style);
+      return h(
+        React.Fragment,
+        null,
+        h('div', { style: { fontSize: 11, color: 'var(--dsw-alias-label-tertiary, #888)', margin: '0 0 4px' } }, STR.selectorTitle),
+        h('textarea', {
+          value: v,
+          spellCheck: false,
+          autoFocus: true,
+          rows: 3,
+          placeholder: effective || '',
+          onChange: (e) => setV(e.target.value),
+          onBlur: () => commit(v),
+          onKeyDown: (e) => {
+            e.stopPropagation();
+            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+              e.preventDefault();
+              if (commit(v)) e.target.blur();
+            }
+            if (e.key === 'Escape') {
+              e.preventDefault();
+              setV(n.selector || '');
+              setErr('');
+              e.target.blur();
+            }
+          },
+          style: {
+            width: '100%', boxSizing: 'border-box', resize: 'vertical', fontSize: 11.5, lineHeight: '16px',
+            fontFamily: 'Consolas, Menlo, monospace', padding: '5px 7px', borderRadius: 6,
+            background: 'var(--dsw-alias-bg-layer-1, #fff)', color: 'var(--dsw-alias-label-primary, inherit)',
+            border: '1px solid ' + (err ? 'var(--dsw-alias-state-error-primary, #c00)' : 'var(--dsw-alias-border-l1, #ccc)'),
+          },
+        }),
+        err
+          ? h('div', { style: { fontSize: 10.5, color: 'var(--dsw-alias-state-error-primary, #c00)', marginTop: 3 } }, err)
+          : effective
+            ? h('div', { style: { fontSize: 10, color: 'var(--dsw-alias-label-tertiary, #888)', marginTop: 3, wordBreak: 'break-all' } }, STR.effective + ': ' + effective)
+            : null,
+        css
+          ? h('pre', { style: { fontSize: 10, lineHeight: '14px', margin: '6px 0 0', padding: '6px 7px', maxHeight: 96, overflow: 'auto', borderRadius: 6, background: 'var(--dsw-alias-bg-layer-2, rgba(127,127,127,0.12))', color: 'var(--dsw-alias-label-secondary, inherit)', whiteSpace: 'pre-wrap', wordBreak: 'break-all' } }, css)
+          : null,
+        h(
+          'div',
+          { style: { display: 'flex', gap: 6, marginTop: 6, justifyContent: 'flex-end' } },
+          h('button', { style: miniBtnStyle, onClick: () => { setCopied(true); try { navigator.clipboard.writeText(v); } catch {} setTimeout(() => setCopied(false), 1200); } }, copied ? '✓' : 'Copy'),
+          h('button', { style: miniBtnStyle, onClick: () => commit(v) }, STR.apply),
+        ),
       );
     }
 
@@ -885,6 +1068,17 @@ window.__ModuleLoader__.load({
         setPop(null);
       }, []);
 
+      const [renaming, setRenaming] = React.useState(null);
+
+      const renameCustom = React.useCallback((id, label) => {
+        setS((prev) => {
+          const n = prev.nodes[id];
+          if (!n || n.label === label) return prev;
+          return { ...prev, nodes: { ...prev.nodes, [id]: { ...n, label } } };
+        });
+        setRenaming(null);
+      }, []);
+
       // "+" in the 自定义 row. New ids are one past the highest existing custom
       // index, so duplicates are impossible even if an older saved config moved
       // the seq counter.
@@ -940,6 +1134,13 @@ window.__ModuleLoader__.load({
       }, []);
       const keepOpen = React.useCallback(() => clearTimeout(popTimer.current), []);
 
+      // Hovering a match count outlines the matched elements on the page.
+      const [matchPreview, setMatchPreview] = React.useState('');
+      React.useEffect(() => {
+        if (!matchPreview) return undefined;
+        return highlightMatches(matchPreview);
+      }, [matchPreview]);
+
       const rowButton = (nodeId, key, label, hasValue) =>
         h(
           'button',
@@ -950,6 +1151,23 @@ window.__ModuleLoader__.load({
           },
           label,
           hasValue ? h(GroupDot, { on: true }) : null,
+        );
+
+      // "查看": opens the selector editor in place of the hover popover.
+      const viewButton = (nodeId) =>
+        h(
+          'button',
+          {
+            style: btnStyle,
+            onClick: (e) => {
+              e.stopPropagation();
+              clearTimeout(popTimer.current);
+              const rect = e.currentTarget.getBoundingClientRect();
+              setPop({ id: nodeId, key: 'view', rect });
+              setHoveredRow((cur) => (cur === nodeId ? cur : cur));
+            },
+          },
+          STR.view,
         );
 
       // "Pick" button: no popover, direct click starts/cancels the picker.
@@ -998,11 +1216,25 @@ window.__ModuleLoader__.load({
             ? h('span', { 'aria-hidden': true, style: { width: 7, height: 7, borderRadius: '50%', background: 'var(--dsw-alias-brand-primary, #247bbf)', flex: '0 0 auto' } })
             : h('span', { style: { width: 7, flex: '0 0 auto' } }),
           // Labels are display-only: hovering a name must not open anything.
-          h('span', {
-            style: { fontSize: 12.5, color: 'var(--dsw-alias-label-primary, inherit)', flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-          }, n.label || id),
+          // Custom regions can be renamed with a double click.
+          renaming === id && isCustom
+            ? h(RenameBox, {
+                initial: n.label || id,
+                onCommit: (label) => renameCustom(id, label),
+                onCancel: () => setRenaming(null),
+              })
+            : h('span', {
+                title: isCustom ? STR.renameHint : undefined,
+                onDoubleClick: isCustom ? () => setRenaming(id) : undefined,
+                style: { fontSize: 12.5, color: 'var(--dsw-alias-label-primary, inherit)', flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
+              }, n.label || id),
           !isGlobal && count
-            ? h('span', { style: { fontSize: 10, color: 'var(--dsw-alias-state-success-primary, #2a2)', flex: '0 0 auto' } }, count)
+            ? h('span', {
+                title: STR.hoverPreview,
+                onMouseEnter: () => setMatchPreview(n.selector || (BINDINGS[id] && BINDINGS[id][0]) || ''),
+                onMouseLeave: () => setMatchPreview(''),
+                style: { fontSize: 10, color: 'var(--dsw-alias-state-success-primary, #2a2)', flex: '0 0 auto', cursor: 'help' },
+              }, count)
             : null,
           h(
             'span',
@@ -1022,6 +1254,7 @@ window.__ModuleLoader__.load({
                   rowButton(id, 'bg', STR.bg, !!st.bg),
                   rowButton(id, 'border', STR.border, !!(st.border || st.borderW || st.radius)),
                   rowButton(id, 'text', STR.text, !!(st.text || st.family || st.size || st.weight)),
+                  viewButton(id),
                 ],
             isCustomRoot
               ? h('button', {
@@ -1088,8 +1321,20 @@ window.__ModuleLoader__.load({
           return null;
         }
         const st = n.style || {};
-        if (pop.key === 'pick') {
-          return h(PickPopover, { id, count: counts[id] || 0 });
+        if (pop.key === 'view') {
+          // Effective selector: the saved override, else what auto-binding resolves to.
+          const cands = BINDINGS[id] || [];
+          let autoSel = '';
+          for (const sel of cands) {
+            if (q(sel).length) { autoSel = sel; break; }
+          }
+          const effective = n.selector || autoSel;
+          return h(StyleRow, {
+            id,
+            n,
+            effective,
+            onChange: (sel) => { updateNode(id, { selector: sel }); setPop(null); },
+          });
         }
         if (pop.key === 'bg') {
           return h(ColorField, { label: STR.fBg, value: st.bg, onChange: (v) => setStyle(id, 'bg', v) });
