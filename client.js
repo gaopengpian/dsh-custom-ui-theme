@@ -807,6 +807,7 @@ window.__ModuleLoader__.load({
       const [counts, setCounts] = React.useState({});
       const [pop, setPop] = React.useState(null); // {id, key, rect}
       const [hoveredRow, setHoveredRow] = React.useState(null); // row whose actions are hovered
+      const [fabHover, setFabHover] = React.useState(false); // entry button: 50% unless hovered
       const sRef = React.useRef(s);
       sRef.current = s;
       const popTimer = React.useRef(null);
@@ -1446,6 +1447,8 @@ window.__ModuleLoader__.load({
           onPointerUp: onFabPointerUp,
           onPointerCancel: onFabPointerUp,
           onLostPointerCapture: onFabPointerUp,
+          onMouseEnter: () => setFabHover(true),
+          onMouseLeave: () => setFabHover(false),
           onDragStart: (e) => e.preventDefault(),
           onClick: (e) => {
             if (suppressClickRef.current) {
@@ -1482,7 +1485,8 @@ window.__ModuleLoader__.load({
             cursor: dragging ? 'grabbing' : 'grab',
             touchAction: 'none',
             userSelect: 'none',
-            transition: dragging ? 'none' : 'box-shadow 0.15s',
+            opacity: fabHover ? 1 : 0.5,
+            transition: dragging ? 'none' : 'box-shadow 0.15s, opacity 0.15s',
           },
         },
         h('span', { 'aria-hidden': true }, '◐'),
