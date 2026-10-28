@@ -30,6 +30,7 @@ window.__ModuleLoader__.load({
           auto: '恢复自动',
           clearSel: '清除选取',
           picking: '点击要样式的元素（Esc / 点此取消）',
+          pickFail: '这个元素无法生成唯一选择器，请换一个位置再试',
           matched: (n) => '匹配 ' + n,
           unbound: '未匹配（可手动选取）',
           customNotBound: '自定义区域需先选取绑定',
@@ -93,6 +94,7 @@ window.__ModuleLoader__.load({
           auto: 'Back to auto',
           clearSel: 'Clear pick',
           picking: 'Click the element to style (Esc / click here to cancel)',
+          pickFail: 'Could not build a unique selector for this element — try another spot',
           matched: (n) => n + ' matched',
           unbound: 'No match (pick manually)',
           customNotBound: 'Custom region: pick to bind',
@@ -305,7 +307,13 @@ window.__ModuleLoader__.load({
     }
 
     function buildSelector(el) {
-      if (!el || el === document.body || el === document.documentElement) return 'body';
+      if (!el || el.nodeType !== 1) return '';
+      // A node inside a shadow root is invisible to document.querySelectorAll and
+      // the outer sheet cannot style it; anchor on the host so the pick still
+      // lands on a real element instead of silently returning nothing.
+      const nodeRoot = el.getRootNode && el.getRootNode();
+      if (nodeRoot && nodeRoot.host) return buildSelector(nodeRoot.host);
+      if (el === document.body || el === document.documentElement) return 'body';
       const tryUnique = (sel) => {
         try {
           const n = document.querySelectorAll(sel);
@@ -330,12 +338,20 @@ window.__ModuleLoader__.load({
       }
       const segs = [];
       let cur = el;
-      while (cur && cur.nodeType === 1 && cur !== document.documentElement) {
+      // Stop at <body>, not at <html>: the path below is prefixed with 'body > ',
+      // so also emitting body's own segment produced 'body > body:nth-child(1) >
+      // …', which can never match — every element without an id, unique class or
+      // data attribute therefore built an empty selector and the pick was
+      // dropped without feedback.
+      while (cur && cur.nodeType === 1 && cur !== document.body) {
         const p = cur.parentElement;
         const idx = p ? Array.prototype.indexOf.call(p.children, cur) + 1 : 1;
         segs.unshift(cur.tagName.toLowerCase() + ':nth-child(' + idx + ')');
         cur = p;
       }
+      // Element is not inside <body> (detached, or hoisted under <html>): the
+      // body-rooted path cannot describe it.
+      if (cur !== document.body || !segs.length) return '';
       const sel = 'body > ' + segs.join(' > ');
       return tryUnique(sel) ? sel : '';
     }
@@ -804,6 +820,7 @@ window.__ModuleLoader__.load({
       const [s, setS] = React.useState(loadState);
       const [open, setOpen] = React.useState(false);
       const [picking, setPicking] = React.useState(null);
+      const [pickFail, setPickFail] = React.useState(false);
       const [counts, setCounts] = React.useState({});
       const [pop, setPop] = React.useState(null); // {id, key, rect}
       const [hoveredRow, setHoveredRow] = React.useState(null); // row whose actions are hovered
@@ -1050,13 +1067,19 @@ window.__ModuleLoader__.load({
         }
         endPick();
         setPop(null);
+        setPickFail(false);
         setPicking(id);
         cancelPickRef.current = pickElement((el) => {
           cancelPickRef.current = null;
           setPicking(null);
           if (!el) return;
           const sel = buildSelector(el);
-          if (!sel) return;
+          if (!sel) {
+            // Never fail silently: a pick that yields no selector used to look
+            // like the click did nothing at all.
+            setPickFail(true);
+            return;
+          }
           updateNode(id, { selector: sel });
         });
       }, [picking, endPick, updateNode]);
@@ -1149,6 +1172,13 @@ window.__ModuleLoader__.load({
         if (!matchPreview) return undefined;
         return highlightMatches(matchPreview);
       }, [matchPreview]);
+
+      // A failed pick explains itself for a moment, then clears.
+      React.useEffect(() => {
+        if (!pickFail) return undefined;
+        const t = setTimeout(() => setPickFail(false), 2800);
+        return () => clearTimeout(t);
+      }, [pickFail]);
 
       const rowButton = (nodeId, key, label, hasValue) =>
         h(
@@ -1511,6 +1541,22 @@ window.__ModuleLoader__.load({
                 },
               },
               STR.picking,
+            )
+          : null,
+        pickFail
+          ? h(
+              'div',
+              {
+                className: PANEL_CLS,
+                role: 'alert',
+                style: {
+                  position: 'fixed', left: '50%', top: 12, transform: 'translateX(-50%)', zIndex: 2147483647,
+                  padding: '6px 14px', borderRadius: 8, fontSize: 12, pointerEvents: 'none',
+                  background: 'var(--dsw-alias-state-error-primary, #e05656)', color: '#fff',
+                  boxShadow: '0 2px 10px rgba(0,0,0,0.3)',
+                },
+              },
+              STR.pickFail,
             )
           : null,
         picking ? null : entryBtn,
