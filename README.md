@@ -2,7 +2,7 @@
 
 界面主题自定义插件 —— 按界面区域逐项配置背景、边框、文本样式，覆盖 DeepSeek Harness Desktop 的几乎全部元素。
 
-![界面主题自定义 · 区域树面板](assets/screenshot-panel.png)
+![界面主题自定义 · 区域树面板](assets/screenshot-panel.jpg)
 
 Customize the look of DeepSeek Harness Desktop region by region: background, border, and text styles (font family / size / weight) for the sidebar, brand, workspaces, session list, conversation, composer, panels and more — highest-priority styles that override other theme plugins.
 
