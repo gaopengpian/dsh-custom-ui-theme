@@ -44,6 +44,12 @@ window.__ModuleLoader__.load({
           fRadius: '圆角',
           fText: '文字色',
           fFamily: '字体',
+          fontLoad: '读取本机字体',
+          fontLoading: '正在读取本机字体…',
+          fontLoaded: (n) => '已读取 ' + n + ' 种本机字体',
+          fontEmpty: '未找到可用字体，将显示内置预设',
+          fontUnsupported: '此环境不支持读取本机字体，将显示内置预设',
+          fontError: '读取失败或权限被拒绝，将显示内置预设',
           fSize: '字号 px',
           fWeight: '字重',
           follow: '默认',
@@ -109,6 +115,12 @@ window.__ModuleLoader__.load({
           fRadius: 'Radius',
           fText: 'Text color',
           fFamily: 'Font',
+          fontLoad: 'Load local fonts',
+          fontLoading: 'Reading local fonts…',
+          fontLoaded: (n) => 'Loaded ' + n + ' local fonts',
+          fontEmpty: 'No local fonts found; showing presets',
+          fontUnsupported: 'Local font access is unavailable',
+          fontError: 'Could not read local fonts; showing presets',
           fSize: 'Size px',
           fWeight: 'Weight',
           follow: 'Default',
@@ -262,6 +274,47 @@ window.__ModuleLoader__.load({
       ['600', STR.weights.semibold],
       ['bold', STR.weights.bold],
     ];
+
+    function normalizeLocalFonts(fonts) {
+      const families = new Set();
+      for (const font of Array.isArray(fonts) ? fonts : []) {
+        if (font && typeof font.family === 'string' && font.family.trim()) families.add(font.family.trim());
+      }
+      return Array.from(families).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }) || a.localeCompare(b));
+    }
+
+    function cssString(value) {
+      let escaped = '"';
+      for (const character of String(value)) {
+        const code = character.codePointAt(0);
+        if (code === 0) escaped += '\\fffd ';
+        else if (code === 0x22 || code === 0x5c || code <= 0x1f || code === 0x7f) escaped += '\\' + code.toString(16) + ' ';
+        else escaped += character;
+      }
+      return escaped + '"';
+    }
+
+    function cssFontFamily(family) {
+      return cssString(family);
+    }
+
+    async function readLocalFonts(query) {
+      if (typeof query !== 'function') return { status: 'unsupported', families: [] };
+      try {
+        const families = normalizeLocalFonts(await query());
+        return { status: families.length ? 'loaded' : 'empty', families };
+      } catch {
+        return { status: 'error', families: [] };
+      }
+    }
+
+    function fontPreviewCss(preview) {
+      if (!preview || !preview.family) return '';
+      if (preview.scope === 'global') return `html { font-family: ${preview.family} !important }`;
+      if (preview.scope !== 'region' || !preview.id) return '';
+      const selector = `[${ATTR}=${cssString(preview.id)}]`;
+      return nodeRules(selector, { family: preview.family }).join('\n');
+    }
 
     const COLOR_RE = /^#([0-9a-f]{3,8})$/i;
     const esc = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => '\\' + c));
@@ -549,7 +602,7 @@ window.__ModuleLoader__.load({
       return rules;
     }
 
-    function buildCss(s) {
+    function buildCss(s, preview) {
       const parts = [];
       const vars = [];
       for (const [key, token] of TOKEN_FIELDS) {
@@ -573,6 +626,8 @@ window.__ModuleLoader__.load({
         if (!Object.keys(st).some((k) => st[k])) continue;
         parts.push(...nodeRules(`[${ATTR}="${id}"]`, st));
       }
+      const previewCss = fontPreviewCss(preview);
+      if (previewCss) parts.push(previewCss);
       return parts.join('\n');
     }
 
@@ -614,26 +669,121 @@ window.__ModuleLoader__.load({
       );
     }
 
-    function FontSelect({ value, onChange }) {
+    function FontSelect({ value, onChange, onPreview, onPreviewEnd }) {
+      const [expanded, setExpanded] = React.useState(false);
+      const [localFonts, setLocalFonts] = React.useState(null);
+      const [fontStatus, setFontStatus] = React.useState('');
+      const [loading, setLoading] = React.useState(false);
+      const [hovered, setHovered] = React.useState(null);
+      const mountedRef = React.useRef(false);
+      const onPreviewEndRef = React.useRef(onPreviewEnd);
+      onPreviewEndRef.current = onPreviewEnd;
+
+      React.useEffect(() => {
+        mountedRef.current = true;
+        return () => {
+          mountedRef.current = false;
+          if (onPreviewEndRef.current) onPreviewEndRef.current();
+        };
+      }, []);
+
+      const options = FONT_CHOICES.map(([key, family]) => ({ key, label: STR.fonts[key], family }));
+      for (const family of localFonts || []) {
+        const safeFamily = cssFontFamily(family);
+        if (!options.some((option) => option.family === safeFamily)) {
+          options.push({ key: 'local:' + family, label: family, family: safeFamily });
+        }
+      }
+      const selected = options.find((option) => (option.family || null) === (value || null));
+      const selectedLabel = selected ? selected.label : (value || STR.fonts.default);
+      const statusText = fontStatus === 'loaded'
+        ? STR.fontLoaded(localFonts.length)
+        : fontStatus === 'empty'
+          ? STR.fontEmpty
+          : fontStatus === 'unsupported'
+            ? STR.fontUnsupported
+            : fontStatus === 'error' ? STR.fontError : '';
+
+      const loadFonts = async () => {
+        if (loading) return;
+        setLoading(true);
+        let query = null;
+        try {
+          if (typeof window.queryLocalFonts === 'function') query = window.queryLocalFonts.bind(window);
+        } catch {}
+        const result = await readLocalFonts(query);
+        if (!mountedRef.current) return;
+        setLocalFonts(result.families);
+        setFontStatus(result.status);
+        setLoading(false);
+      };
+
       return h(
         'div',
-        { style: { display: 'flex', alignItems: 'center', gap: 6, margin: '4px 0' } },
-        h('span', { style: { ...labelStyle, flex: 1 } }, STR.fFamily),
+        { style: { margin: '4px 0' } },
         h(
-          'select',
-          {
-            value: (() => {
-              const found = FONT_CHOICES.find(([, v]) => (v || null) === (value || null));
-              return found ? found[0] : 'default';
-            })(),
-            onChange: (e) => {
-              const key = e.target.value;
-              onChange(key === 'default' ? null : FONT_CHOICES.find(([k]) => k === key)[1]);
+          'div',
+          { style: { display: 'flex', alignItems: 'center', gap: 6 } },
+          h('span', { style: { ...labelStyle, flex: 1 } }, STR.fFamily),
+          h('button', {
+            type: 'button',
+            style: { ...miniBtnStyle, minWidth: 120, textAlign: 'left' },
+            'aria-haspopup': 'listbox',
+            'aria-expanded': expanded,
+            onClick: () => {
+              if (expanded && onPreviewEndRef.current) onPreviewEndRef.current();
+              setExpanded(!expanded);
             },
-            style: { ...inputStyle, width: 120 },
-          },
-          ...FONT_CHOICES.map(([k]) => h('option', { key: k, value: k }, STR.fonts[k])),
+          }, selectedLabel),
         ),
+        expanded
+          ? h(
+              'div',
+              { style: { marginTop: 6 } },
+              h('button', {
+                type: 'button',
+                style: { ...miniBtnStyle, width: '100%', textAlign: 'left' },
+                'aria-label': STR.fontLoad,
+                onClick: loadFonts,
+                disabled: loading,
+              }, loading ? STR.fontLoading : STR.fontLoad),
+              statusText ? h('div', {
+                role: 'status',
+                style: { fontSize: 10, color: 'var(--dsw-alias-label-tertiary, #888)', margin: '5px 0' },
+              }, statusText) : null,
+              h(
+                'div',
+                { role: 'listbox', 'aria-label': STR.fFamily, style: { display: 'flex', flexDirection: 'column', gap: 2, marginTop: 5 } },
+                ...options.map((option) => h('button', {
+                  key: option.key,
+                  type: 'button',
+                  role: 'option',
+                  'aria-selected': (option.family || null) === (value || null),
+                  style: {
+                    ...miniBtnStyle,
+                    width: '100%',
+                    textAlign: 'left',
+                    fontFamily: option.family || 'inherit',
+                    background: hovered === option.key ? 'var(--dsw-alias-bg-layer-1, rgba(128,128,128,0.12))' : 'transparent',
+                  },
+                  onMouseEnter: () => {
+                    setHovered(option.key);
+                    if (option.family && onPreview) onPreview(option.family);
+                    else if (onPreviewEndRef.current) onPreviewEndRef.current();
+                  },
+                  onMouseLeave: () => {
+                    setHovered(null);
+                    if (onPreviewEndRef.current) onPreviewEndRef.current();
+                  },
+                  onClick: () => {
+                    if (onPreviewEndRef.current) onPreviewEndRef.current();
+                    onChange(option.family);
+                    setExpanded(false);
+                  },
+                }, option.label)),
+              ),
+            )
+          : null,
       );
     }
 
@@ -827,6 +977,8 @@ window.__ModuleLoader__.load({
       const [fabHover, setFabHover] = React.useState(false); // entry button: 50% unless hovered
       const sRef = React.useRef(s);
       sRef.current = s;
+      const fontPreviewRef = React.useRef(null);
+      const themeStyleRef = React.useRef(null);
       const popTimer = React.useRef(null);
       const cancelPickRef = React.useRef(null);
       const lastRowRef = React.useRef(null);
@@ -842,12 +994,14 @@ window.__ModuleLoader__.load({
         try {
           localStorage.setItem(STORAGE_KEY, JSON.stringify(s));
         } catch {}
+        if (themeStyleRef.current) themeStyleRef.current.textContent = buildCss(s, fontPreviewRef.current);
       }, [s]);
 
       // tag + style loop
       React.useEffect(() => {
         const styleEl = document.createElement('style');
         styleEl.setAttribute('data-dsh-ui-theme-style', '1');
+        themeStyleRef.current = styleEl;
         let raf = 0;
         const rescan = () => {
           const st = sRef.current;
@@ -858,7 +1012,7 @@ window.__ModuleLoader__.load({
             for (const el of els) el.setAttribute(ATTR, id);
             if (els.length) next[id] = els.length;
           }
-          styleEl.textContent = buildCss(st);
+          styleEl.textContent = buildCss(st, fontPreviewRef.current);
           setCounts((prev) => {
             const keys = Object.keys(next);
             const pkeys = Object.keys(prev);
@@ -892,6 +1046,8 @@ window.__ModuleLoader__.load({
           clearTimeout(raf);
           mo.disconnect();
           ro.disconnect();
+          fontPreviewRef.current = null;
+          if (themeStyleRef.current === styleEl) themeStyleRef.current = null;
           if (styleEl.parentNode) styleEl.remove();
           for (const el of q('[' + ATTR + ']')) el.removeAttribute(ATTR);
         };
@@ -928,6 +1084,14 @@ window.__ModuleLoader__.load({
           return { ...prev, font };
         });
       }, []);
+
+      const setFontPreview = React.useCallback((scope, id, family) => {
+        const preview = scope && family ? { scope, id, family } : null;
+        fontPreviewRef.current = preview;
+        if (themeStyleRef.current) themeStyleRef.current.textContent = buildCss(sRef.current, preview);
+      }, []);
+
+      const clearFontPreview = React.useCallback(() => setFontPreview(null, null, null), [setFontPreview]);
 
       // Draggable floating button. Position is stored as a fixed top-left point
       // (fabPos) and clamped to the viewport, so the button can never be dragged
@@ -1352,7 +1516,12 @@ window.__ModuleLoader__.load({
             return h(
               'div',
               null,
-              h(FontSelect, { value: s.font.family, onChange: (v) => setFont('family', v) }),
+              h(FontSelect, {
+                value: s.font.family,
+                onChange: (v) => setFont('family', v),
+                onPreview: (family) => setFontPreview('global', null, family),
+                onPreviewEnd: clearFontPreview,
+              }),
               h(NumberField, { label: STR.fSize, min: 10, max: 24, step: 0.5, value: s.font.size, onChange: (v) => setFont('size', v) }),
               h(WeightSelect, { value: s.font.weight, onChange: (v) => setFont('weight', v) }),
             );
@@ -1392,7 +1561,12 @@ window.__ModuleLoader__.load({
             'div',
             null,
             h(ColorField, { label: STR.fText, value: st.text, onChange: (v) => setStyle(id, 'text', v) }),
-            h(FontSelect, { value: st.family, onChange: (v) => setStyle(id, 'family', v) }),
+            h(FontSelect, {
+              value: st.family,
+              onChange: (v) => setStyle(id, 'family', v),
+              onPreview: (family) => setFontPreview('region', id, family),
+              onPreviewEnd: clearFontPreview,
+            }),
             h(NumberField, { label: STR.fSize, min: 8, max: 32, step: 0.5, value: st.size, onChange: (v) => setStyle(id, 'size', v) }),
             h(WeightSelect, { value: st.weight, onChange: (v) => setStyle(id, 'weight', v) }),
           );
